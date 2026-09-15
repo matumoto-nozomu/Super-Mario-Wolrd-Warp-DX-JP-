@@ -1,5 +1,4 @@
-[Super Mario World Warp DX.html](https://github.com/user-attachments/files/32194985/Super.Mario.World.Warp.DX.html)
-<!DOCTYPE html>
+[Super.Mario.World.Warp.DX.html](https://github.com/user-attachments/files/32223187/Super.Mario.World.Warp.DX.html)[Uploading Super.Mario.World.War<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -2798,4 +2797,4 @@ window.drawPl=function(pl){
 
 </script>
 </body>
-</html>
+</html>p.DX.html…]()
