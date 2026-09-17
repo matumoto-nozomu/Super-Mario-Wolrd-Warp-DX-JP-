@@ -1,4 +1,5 @@
-[Super.Mario.World.Warp.DX.html](https://github.com/user-attachments/files/32223187/Super.Mario.World.Warp.DX.html)[Uploading Super.Mario.World.War<!DOCTYPE html>
+[Super_Mario_World_Warp_DX (2).html](https://github.com/user-attachments/files/32319485/Super_Mario_World_Warp_DX.2.html)
+<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -2452,37 +2453,190 @@ function mpGetSprSet(colorIdx){
 const MP={
   peer:null, isHost:false, roomCode:null, conns:{}, hostConn:null,
   myName:'PLAYER', myColorIdx:0, myId:null,
+  roomName:'', roomPassword:'', hasPassword:false, lobbyHeartbeat:null,
   players:{}, active:false, inPlay:false, sendCd:0, status:''
 };
 let onlineSel=1; // 1=ホスト 2=ジョイン
+let joinListSel=0;      // ジョイン画面: ルーム一覧のカーソル位置
+let joinListRefreshT=0; // ジョイン画面: 一覧の自動更新用フレームカウンタ
 
 function mpMakeCode(){const cs='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<4;i++)s+=cs[Math.floor(Math.random()*cs.length)];return s;}
 
+// ---- WebRTC接続設定(STUN+TURN) ----
+// 別々のネットワーク(別回線・別Wi-Fi)同士だと、双方が厳しいNAT/ファイアウォールの場合
+// STUNだけでは直接経路が見つからず接続に失敗・タイムアウトすることが多い。
+// TURN中継サーバーを候補に加えることで、直接経路がダメでも中継経由で確実につながるようにする。
+// (無料の公開TURNのため速度上限や不安定な場合あり。自前TURNに差し替え可能)
+const MP_ICE_CONFIG={
+  iceServers:[
+    {urls:'stun:stun.l.google.com:19302'},
+    {urls:'stun:stun1.l.google.com:19302'},
+    {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
+    {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},
+    {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
+  ]
+};
+// PeerJSの接続確立を待つ最大時間(ms)。これを超えたらタイムアウト扱いにしてやり直せるようにする。
+const MP_CONNECT_TIMEOUT_MS=15000;
+
+// ============================================================
+// ★ 部屋一覧(ロビーディレクトリ)機能 ★
+// サーバーを立てずに「今開いている部屋の一覧」を実現するため、
+// 決め打ちのPeer ID(MP_LOBBY_ID)を「ロビー係」として誰か1人が名乗り出て、
+// ホストはロビー係に自分の部屋情報を登録、参加者はロビー係から一覧をもらう仕組み。
+// ロビー係が抜けても、次にオンライン画面に来た人が自動的に代わりを務める(自己修復)。
+// ============================================================
+const MP_LOBBY_ID='mswd-lobby-directory-v2';
+const LOBBY={
+  peer:null, isCoordinator:false, ready:false, failed:false,
+  rooms:{}, coordConn:null, listeners:{}, pruneTimer:null, attempts:0
+};
+function lobbyTeardown(){
+  try{if(LOBBY.pruneTimer)clearInterval(LOBBY.pruneTimer);}catch(e){}
+  try{if(LOBBY.peer)LOBBY.peer.destroy();}catch(e){}
+  LOBBY.peer=null;LOBBY.isCoordinator=false;LOBBY.ready=false;LOBBY.failed=false;
+  LOBBY.rooms={};LOBBY.coordConn=null;LOBBY.listeners={};LOBBY.pruneTimer=null;LOBBY.attempts=0;
+}
+function lobbyBroadcast(){
+  const msg={t:'rooms',rooms:LOBBY.rooms};
+  Object.values(LOBBY.listeners).forEach(c=>{try{c.send(msg);}catch(e){}});
+}
+function lobbyCoordOnData(conn,data){
+  if(!data||!data.t)return;
+  if(data.t==='register'){
+    LOBBY.rooms[data.code]={code:data.code,name:(data.name||'部屋').slice(0,16),hostName:(data.hostName||'PLAYER').slice(0,10),hasPassword:!!data.hasPassword,count:data.count||1,updatedAt:Date.now()};
+    lobbyBroadcast();
+  }else if(data.t==='update'){
+    const r=LOBBY.rooms[data.code];if(r){r.count=data.count;if(data.name!==undefined)r.name=(data.name||r.name).slice(0,16);r.updatedAt=Date.now();lobbyBroadcast();}
+  }else if(data.t==='unregister'){
+    if(LOBBY.rooms[data.code]){delete LOBBY.rooms[data.code];lobbyBroadcast();}
+  }else if(data.t==='list'){
+    try{conn.send({t:'rooms',rooms:LOBBY.rooms});}catch(e){}
+  }
+}
+function lobbyBecomeCoordinator(onReady){
+  LOBBY.isCoordinator=true;LOBBY.ready=true;LOBBY.failed=false;
+  LOBBY.peer.on('connection',conn=>{
+    LOBBY.listeners[conn.peer]=conn;
+    conn.on('data',data=>lobbyCoordOnData(conn,data));
+    conn.on('close',()=>{delete LOBBY.listeners[conn.peer];});
+    conn.on('error',()=>{delete LOBBY.listeners[conn.peer];});
+  });
+  // 20秒以上更新のない部屋(=閉じたのに解除通知が届かなかった部屋)を掃除する
+  LOBBY.pruneTimer=setInterval(()=>{
+    let changed=false;const now=Date.now();
+    Object.keys(LOBBY.rooms).forEach(code=>{if(now-LOBBY.rooms[code].updatedAt>20000){delete LOBBY.rooms[code];changed=true;}});
+    if(changed)lobbyBroadcast();
+  },5000);
+  onReady&&onReady();
+}
+function lobbyBecomeParticipant(onReady){
+  const p2=new Peer({debug:0,config:MP_ICE_CONFIG});
+  LOBBY.peer=p2;LOBBY.isCoordinator=false;
+  let settled=false;
+  const failTimer=setTimeout(()=>{if(!settled){settled=true;LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();}},MP_CONNECT_TIMEOUT_MS);
+  p2.on('open',()=>{
+    const conn=p2.connect(MP_LOBBY_ID,{serialization:'json',reliable:true});
+    LOBBY.coordConn=conn;
+    conn.on('open',()=>{
+      if(settled)return;settled=true;clearTimeout(failTimer);
+      LOBBY.ready=true;LOBBY.failed=false;onReady&&onReady();
+    });
+    conn.on('data',data=>{if(data&&data.t==='rooms')LOBBY.rooms=data.rooms||{};});
+    conn.on('close',()=>{LOBBY.ready=false;});
+    conn.on('error',()=>{
+      if(settled)return;settled=true;clearTimeout(failTimer);
+      // ロビー係が実は不在(古い予約が残っていただけ)だった場合、自分がロビー係に名乗り出る
+      if(LOBBY.attempts<3){LOBBY.attempts++;try{p2.destroy();}catch(e){}lobbyInit(onReady);}
+      else{LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();}
+    });
+  });
+  p2.on('error',()=>{
+    if(settled)return;settled=true;clearTimeout(failTimer);LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();
+  });
+}
+function lobbyInit(onReady){
+  if(LOBBY.peer&&(LOBBY.ready||LOBBY.isCoordinator)){onReady&&onReady();return;}
+  if(typeof Peer==='undefined'){LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();return;}
+  const p=new Peer(MP_LOBBY_ID,{debug:0,config:MP_ICE_CONFIG});
+  LOBBY.peer=p;
+  let settled=false;
+  const timer=setTimeout(()=>{if(!settled){settled=true;try{p.destroy();}catch(e){}lobbyBecomeParticipant(onReady);}},6000);
+  p.on('open',()=>{
+    if(settled)return;settled=true;clearTimeout(timer);
+    lobbyBecomeCoordinator(onReady);
+  });
+  p.on('error',err=>{
+    if(settled)return;settled=true;clearTimeout(timer);
+    if(err&&err.type==='unavailable-id'){lobbyBecomeParticipant(onReady);return;}
+    LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();
+  });
+}
+function lobbyRegisterRoom(code,name,hostName,hasPassword,count){
+  const payload={t:'register',code,name,hostName,hasPassword,count};
+  if(LOBBY.isCoordinator){lobbyCoordOnData({send:()=>{}},payload);}
+  else if(LOBBY.coordConn&&LOBBY.coordConn.open){try{LOBBY.coordConn.send(payload);}catch(e){}}
+}
+function lobbyUpdateRoom(code,count,name){
+  const payload={t:'update',code,count,name};
+  if(LOBBY.isCoordinator){lobbyCoordOnData({send:()=>{}},payload);}
+  else if(LOBBY.coordConn&&LOBBY.coordConn.open){try{LOBBY.coordConn.send(payload);}catch(e){}}
+}
+function lobbyUnregisterRoom(code){
+  if(!code)return;
+  const payload={t:'unregister',code};
+  if(LOBBY.isCoordinator){lobbyCoordOnData({send:()=>{}},payload);}
+  else if(LOBBY.coordConn&&LOBBY.coordConn.open){try{LOBBY.coordConn.send(payload);}catch(e){}}
+}
+function lobbyRequestList(){
+  if(LOBBY.isCoordinator)return; // 自分がロビー係の場合はLOBBY.roomsが既に最新
+  if(LOBBY.coordConn&&LOBBY.coordConn.open){try{LOBBY.coordConn.send({t:'list'});}catch(e){}}
+}
+
 function mpResetNet(){
   try{if(MP.peer)MP.peer.destroy();}catch(err){}
+  if(MP.isHost&&MP.roomCode)lobbyUnregisterRoom(MP.roomCode);
+  if(MP.lobbyHeartbeat){clearInterval(MP.lobbyHeartbeat);MP.lobbyHeartbeat=null;}
   MP.peer=null;MP.isHost=false;MP.roomCode=null;MP.conns={};MP.hostConn=null;
+  MP.roomName='';MP.roomPassword='';MP.hasPassword=false;
   MP.players={};MP.active=false;MP.inPlay=false;
 }
-function mpLeave(){mpResetNet();MODE='TITLE';bgmStop();}
+function mpLeave(){mpResetNet();lobbyTeardown();MODE='TITLE';bgmStop();}
 
 // ---- ホスト側 ----
-function mpStartHost(attempt){
+function mpStartHost(attempt,roomName,password){
   attempt=attempt||0;
+  if(roomName!==undefined)MP._pendingRoomName=roomName;
+  if(password!==undefined)MP._pendingPassword=password;
   if(typeof Peer==='undefined'){MP.status='オンライン機能の読み込みに失敗しました(通信環境を確認してください)';return;}
   if(attempt>6){MP.status='部屋を作成できませんでした。もう一度お試しください';return;}
   const code=mpMakeCode();
   MP.status='ルーム作成中...';
-  const p=new Peer('mswd-'+code,{debug:0});
+  const p=new Peer('mswd-'+code,{debug:0,config:MP_ICE_CONFIG});
   MP.peer=p;
+  const openTimer=setTimeout(()=>{
+    if(!MP.active){MP.status='接続がタイムアウトしました。もう一度お試しください';try{p.destroy();}catch(e2){}}
+  },MP_CONNECT_TIMEOUT_MS);
   p.on('open',id=>{
+    clearTimeout(openTimer);
     MP.isHost=true;MP.roomCode=code;MP.myId=id;MP.active=true;MP.status='';
+    MP.roomName=(MP._pendingRoomName||(MP.myName+'のへや')).slice(0,16);
+    MP.roomPassword=MP._pendingPassword||'';MP.hasPassword=!!MP.roomPassword;
     MP.players[id]={name:MP.myName,colorIdx:MP.myColorIdx,x:100,y:200,dir:'right',fr:0,anim:'idle',big:false,fire:false,mini:false,dead:false,host:true};
+    // 部屋一覧(ロビー)にこの部屋を登録し、以後は生存確認を兼ねて定期送信する
+    lobbyInit(()=>{
+      lobbyRegisterRoom(MP.roomCode,MP.roomName,MP.myName,MP.hasPassword,Object.keys(MP.players).length);
+      MP.lobbyHeartbeat=setInterval(()=>{
+        if(!MP.isHost||!MP.roomCode){return;}
+        lobbyUpdateRoom(MP.roomCode,Object.keys(MP.players).length,MP.roomName);
+      },5000);
+    });
   });
   p.on('connection',conn=>{
     if(Object.keys(MP.conns).length+1>=16){conn.on('open',()=>{try{conn.send({t:'full'});}catch(err){}conn.close();});return;}
     MP.conns[conn.peer]=conn;
     conn.on('data',data=>mpHostOnData(conn,data));
-    conn.on('close',()=>{delete MP.conns[conn.peer];delete MP.players[conn.peer];mpBroadcastLobby();});
+    conn.on('close',()=>{delete MP.conns[conn.peer];delete MP.players[conn.peer];mpBroadcastLobby();if(MP.roomCode)lobbyUpdateRoom(MP.roomCode,Object.keys(MP.players).length);});
     conn.on('error',()=>{delete MP.conns[conn.peer];delete MP.players[conn.peer];});
   });
   p.on('error',err=>{
@@ -2493,8 +2647,14 @@ function mpStartHost(attempt){
 function mpHostOnData(conn,data){
   if(!data||!data.t)return;
   if(data.t==='join'){
+    if(MP.hasPassword&&(data.password||'')!==MP.roomPassword){
+      try{conn.send({t:'badpass'});}catch(e){}
+      setTimeout(()=>{try{conn.close();}catch(e){}},200);
+      return;
+    }
     MP.players[conn.peer]={name:(data.name||'PLAYER').slice(0,10),colorIdx:data.colorIdx||0,x:100,y:200,dir:'right',fr:0,anim:'idle',big:false,fire:false,mini:false,dead:false,host:false};
     mpBroadcastLobby();
+    if(MP.roomCode)lobbyUpdateRoom(MP.roomCode,Object.keys(MP.players).length);
   }else if(data.t==='state'){
     const pl=MP.players[conn.peer];if(!pl)return;
     Object.assign(pl,data.s);
@@ -2520,21 +2680,25 @@ function mpHostStartGame(){
 }
 
 // ---- 参加側 ----
-function mpJoin(code){
+function mpJoin(code,password){
   if(typeof Peer==='undefined'){MP.status='オンライン機能の読み込みに失敗しました(通信環境を確認してください)';return;}
   MP.status='接続中...';
-  const p=new Peer({debug:0});
+  const p=new Peer({debug:0,config:MP_ICE_CONFIG});
   MP.peer=p;
+  const joinTimer=setTimeout(()=>{
+    if(!MP.active){MP.status='接続がタイムアウトしました。部屋コードを確認してもう一度お試しください';try{p.destroy();}catch(e2){}}
+  },MP_CONNECT_TIMEOUT_MS);
   p.on('open',id=>{
     MP.myId=id;
     const conn=p.connect('mswd-'+code.toUpperCase(),{serialization:'json',reliable:false});
     MP.hostConn=conn;
     conn.on('open',()=>{
+      clearTimeout(joinTimer);
       MP.roomCode=code.toUpperCase();MP.active=true;MP.isHost=false;MP.status='接続しました。ホストの開始を待っています...';
-      conn.send({t:'join',name:MP.myName,colorIdx:MP.myColorIdx});
+      conn.send({t:'join',name:MP.myName,colorIdx:MP.myColorIdx,password:password||''});
     });
     conn.on('data',data=>mpClientOnData(data));
-    conn.on('close',()=>{MP.status='ホストとの接続が切れました';mpResetNet();MODE='ONLINE_MENU';});
+    conn.on('close',()=>{if(MP.active)MP.status='ホストとの接続が切れました';mpResetNet();MODE='ONLINE_MENU';});
     conn.on('error',()=>{MP.status='接続エラー';});
   });
   p.on('error',err=>{
@@ -2545,6 +2709,7 @@ function mpJoin(code){
 function mpClientOnData(data){
   if(!data||!data.t)return;
   if(data.t==='full'){MP.status='この部屋は満員です(最大16人)';mpResetNet();MODE='ONLINE_MENU';return;}
+  if(data.t==='badpass'){MP.status='パスワードが違います';mpResetNet();MODE='ONLINE_JOIN_LIST';joinListRefreshT=0;return;}
   if(data.t==='lobby'){MP.players=data.players;return;}
   if(data.t==='start'){MP.inPlay=true;mpEnterTutorial(data.seed,data.extra);return;}
   if(data.t==='snapshot'){
@@ -2649,6 +2814,7 @@ window.addEventListener('keydown',function(e){
 },true);
 
 // ---- オンラインメニュー/ロビーの入力 ----
+let HS={name:'',hasPassword:false,password:'',sel:0}; // ホスト設定画面の状態
 window.addEventListener('keydown',function(e){
   const k=e.key;
   if(MODE==='ONLINE_MENU'){
@@ -2661,13 +2827,62 @@ window.addEventListener('keydown',function(e){
     if(k===' '||k==='Enter'){
       const nm=(prompt('プレイヤー名を入力してください(最大10文字)','PLAYER')||'PLAYER').trim().slice(0,10);
       MP.myName=nm||'PLAYER';
-      if(onlineSel===1){MODE='ONLINE_HOST_WAIT';mpStartHost();}
-      else{
-        const code=prompt('参加するルームコード(4文字)を入力してください');
-        if(code&&code.trim()){MODE='ONLINE_JOIN_WAIT';mpJoin(code.trim());}
+      if(onlineSel===1){
+        HS={name:(MP.myName+'のへや').slice(0,16),hasPassword:false,password:'',sel:0};
+        MODE='ONLINE_HOST_SETUP';
+      }else{
+        MODE='ONLINE_JOIN_LIST';joinListSel=0;joinListRefreshT=0;MP.status='';
+        lobbyInit(()=>{lobbyRequestList();});
       }
     }
-    if(k==='Escape'){MODE='TITLE';bgmStop();}
+    if(k==='Escape'){lobbyTeardown();MODE='TITLE';bgmStop();}
+    return;
+  }
+  if(MODE==='ONLINE_HOST_SETUP'){
+    e.stopImmediatePropagation();e.preventDefault();
+    if(k==='ArrowUp'||k==='ArrowDown')HS.sel=(HS.sel+(k==='ArrowDown'?1:-1)+3)%3;
+    if(k===' '||k==='Enter'){
+      if(HS.sel===0){
+        const nm=prompt('部屋の名前を入力してください(最大16文字)',HS.name);
+        if(nm&&nm.trim())HS.name=nm.trim().slice(0,16);
+      }else if(HS.sel===1){
+        if(!HS.hasPassword){
+          const pw=prompt('パスコードを設定します。合言葉を入力してください(参加者にも伝えてください)','');
+          if(pw&&pw.trim()){HS.hasPassword=true;HS.password=pw.trim().slice(0,16);}
+        }else{HS.hasPassword=false;HS.password='';}
+      }else if(HS.sel===2){
+        MODE='ONLINE_HOST_WAIT';mpStartHost(0,HS.name,HS.hasPassword?HS.password:'');
+      }
+    }
+    if(k==='Escape'){MODE='ONLINE_MENU';}
+    return;
+  }
+  if(MODE==='ONLINE_JOIN_LIST'){
+    e.stopImmediatePropagation();e.preventDefault();
+    const rooms=lobbyRoomList();
+    const total=rooms.length+1; // 最後の1件は「手動でコード入力」
+    if(k==='ArrowUp')joinListSel=(joinListSel-1+total)%total;
+    if(k==='ArrowDown')joinListSel=(joinListSel+1)%total;
+    if(k==='r'||k==='R')lobbyRequestList();
+    if(k===' '||k==='Enter'){
+      if(joinListSel<rooms.length){
+        const room=rooms[joinListSel];
+        let pw='';
+        if(room.hasPassword){
+          const inp=prompt('「'+room.name+'」にはパスコードが設定されています。入力してください');
+          if(inp===null)return; // キャンセル
+          pw=inp.trim();
+        }
+        MODE='ONLINE_JOIN_WAIT';mpJoin(room.code,pw);
+      }else{
+        const code=prompt('参加するルームコード(4文字)を入力してください');
+        if(code&&code.trim()){
+          const pw=prompt('パスコードが設定されている場合は入力してください(なければ空欄のままでOK)','');
+          MODE='ONLINE_JOIN_WAIT';mpJoin(code.trim(),(pw||'').trim());
+        }
+      }
+    }
+    if(k==='Escape'){MODE='ONLINE_MENU';}
     return;
   }
   if(MODE==='ONLINE_HOST_WAIT'){
@@ -2685,6 +2900,9 @@ window.addEventListener('keydown',function(e){
     e.stopImmediatePropagation();e.preventDefault();mpLeave();return;
   }
 },true);
+function lobbyRoomList(){
+  return Object.values(LOBBY.rooms||{}).sort((a,b)=>b.updatedAt-a.updatedAt);
+}
 
 // ---- 描画: オンラインメニュー ----
 function drawOnlineMenu(){
@@ -2714,12 +2932,16 @@ function drawOnlineHostWait(){
   if(!MP.roomCode){
     ctx.fillStyle='#ffd700';ctx.font='14px monospace';ctx.fillText(MP.status||'ルーム作成中...',260,150);return;
   }
-  ctx.fillStyle='#000';ctx.fillRect(220,70,360,68);ctx.strokeStyle='#fc9c00';ctx.lineWidth=3;ctx.strokeRect(220,70,360,68);
-  ctx.fillStyle='#aaa';ctx.font='12px monospace';ctx.fillText('このルームコードを友達に伝えてください',240,88);
-  ctx.fillStyle='#fc9c00';ctx.font='bold 38px monospace';ctx.textAlign='center';ctx.fillText(MP.roomCode,400,126);ctx.textAlign='left';
-  ctx.fillStyle='#fff';ctx.font='13px monospace';ctx.fillText('参加者 ('+Object.keys(MP.players).length+'/16):',220,163);
+  ctx.fillStyle='#000';ctx.fillRect(220,66,360,80);ctx.strokeStyle='#fc9c00';ctx.lineWidth=3;ctx.strokeRect(220,66,360,80);
+  ctx.fillStyle='#aaa';ctx.font='12px monospace';ctx.textAlign='center';ctx.fillText(MP.roomName||'',400,84);
+  ctx.fillStyle='#fc9c00';ctx.font='bold 34px monospace';ctx.fillText(MP.roomCode,400,120);
+  ctx.fillStyle=MP.hasPassword?'#ff8080':'#80ff80';ctx.font='bold 12px monospace';
+  ctx.fillText(MP.hasPassword?'🔒 パスコードあり':'🔓 パスコードなし(誰でも入室可)',400,140);
+  ctx.textAlign='left';
+  ctx.fillStyle='#888';ctx.font='11px monospace';ctx.fillText('↑この部屋は「ジョイン」の部屋一覧にも表示されます',225,158);
+  ctx.fillStyle='#fff';ctx.font='13px monospace';ctx.fillText('参加者 ('+Object.keys(MP.players).length+'/16):',220,178);
   Object.values(MP.players).forEach((p,i)=>{
-    const y=182+i*20;
+    const y=197+i*20;
     ctx.fillStyle=MP_COLORS[p.colorIdx]||'#fff';ctx.fillRect(220,y-12,14,14);
     ctx.fillStyle='#fff';ctx.font='12px monospace';ctx.fillText((p.host?'★ ':'')+p.name,242,y);
   });
@@ -2740,18 +2962,97 @@ function drawOnlineJoinWait(){
   }
   ctx.fillStyle='#aaa';ctx.font='13px monospace';ctx.fillText('ESC: キャンセルして戻る',260,400);
 }
+// ---- 描画: ホスト設定画面(スマブラの「専用ルーム」設定風) ----
+function drawOnlineHostSetup(){
+  ctx.fillStyle='#0a0a2a';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font='bold 24px monospace';ctx.textAlign='center';ctx.fillText('⚙️ 部屋の設定',400,50);ctx.textAlign='left';
+  const rows=[
+    {label:'部屋の名前',value:HS.name},
+    {label:'パスコード',value:HS.hasPassword?('あり  ( '+HS.password.replace(/./g,'*')+' )'):'なし(誰でも入室可)'},
+    {label:'▶ この設定でホストを開始する',value:''}
+  ];
+  const rx=140,rw=520,rh=56;
+  rows.forEach((row,i)=>{
+    const ry=100+i*(rh+14);
+    const sel=HS.sel===i;
+    ctx.fillStyle=sel?'#fc9c00':'#222';ctx.fillRect(rx,ry,rw,rh);
+    ctx.strokeStyle=sel?'#fff':'#555';ctx.lineWidth=sel?3:1;ctx.strokeRect(rx,ry,rw,rh);
+    ctx.fillStyle=sel?'#000':'#ccc';
+    if(i<2){
+      ctx.font='bold 13px monospace';ctx.fillText(row.label+':',rx+16,ry+24);
+      ctx.font='bold 16px monospace';ctx.fillText(row.value,rx+16,ry+46);
+    }else{
+      ctx.font='bold 17px monospace';ctx.textAlign='center';ctx.fillText(row.label,rx+rw/2,ry+34);ctx.textAlign='left';
+    }
+  });
+  ctx.fillStyle='#fff';ctx.font='12px monospace';
+  ctx.fillText('↑↓:項目選択  SPACE/ENTER:決定・編集  ESC:戻る',150,340);
+  if(HS.sel===1)ctx.fillText('(パスコード行でSPACE/ENTER: 設定/解除を切り替え)',150,358);
+  if(MP.status){ctx.fillStyle='#ff8080';ctx.fillText(MP.status,150,380);}
+  ctx.fillStyle='#888';ctx.font='11px monospace';ctx.fillText('パスコードを設定すると、部屋一覧に🔒アイコン付きで表示され、正しい合言葉を知る人だけが入室できます',150,405);
+}
+// ---- 描画: ジョイン画面 - 部屋選択リスト(スマブラの部屋選択風) ----
+function drawOnlineJoinList(){
+  ctx.fillStyle='#0a0a2a';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font='bold 24px monospace';ctx.textAlign='center';ctx.fillText('🌐 部屋を選んで参加',400,42);ctx.textAlign='left';
+  const rooms=lobbyRoomList();
+  const lx=90,lw=620,rowH=46,top=64;
+  if(!LOBBY.ready&&!LOBBY.isCoordinator){
+    ctx.fillStyle='#ffd700';ctx.font='13px monospace';ctx.textAlign='center';
+    ctx.fillText(LOBBY.failed?'部屋一覧を取得できませんでした。手動でコードを入力してください':'部屋一覧を探しています...',400,150);
+    ctx.textAlign='left';
+  }else if(rooms.length===0){
+    ctx.fillStyle='#aaa';ctx.font='13px monospace';ctx.textAlign='center';
+    ctx.fillText('現在公開されている部屋はありません(下の「コードで入力」をお使いください)',400,150);
+    ctx.textAlign='left';
+  }
+  const maxShow=6;
+  const startIdx=Math.max(0,Math.min(joinListSel-2,Math.max(0,rooms.length-maxShow)));
+  for(let i=0;i<Math.min(maxShow,rooms.length-startIdx);i++){
+    const idx=startIdx+i;const room=rooms[idx];
+    const y=top+i*rowH;const sel=joinListSel===idx;
+    ctx.fillStyle=sel?'#fc9c00':'#222';ctx.fillRect(lx,y,lw,rowH-6);
+    ctx.strokeStyle=sel?'#fff':'#555';ctx.lineWidth=sel?3:1;ctx.strokeRect(lx,y,lw,rowH-6);
+    ctx.fillStyle=sel?'#000':'#fff';ctx.font='bold 14px monospace';
+    ctx.fillText((room.hasPassword?'🔒 ':'🔓 ')+room.name,lx+14,y+20);
+    ctx.font='11px monospace';ctx.fillStyle=sel?'#333':'#aaa';
+    ctx.fillText('ホスト: '+room.hostName+'   人数: '+room.count+'/16   コード: '+room.code,lx+14,y+35);
+  }
+  // 「手動でコード入力」行(常に一番下)
+  {
+    const i=Math.min(maxShow,rooms.length-startIdx);
+    const y=top+i*rowH;const sel=joinListSel===rooms.length;
+    if(i<maxShow+1){
+      ctx.fillStyle=sel?'#fc9c00':'#333';ctx.fillRect(lx,y,lw,rowH-6);
+      ctx.strokeStyle=sel?'#fff':'#555';ctx.lineWidth=sel?3:1;ctx.strokeRect(lx,y,lw,rowH-6);
+      ctx.fillStyle=sel?'#000':'#ccc';ctx.font='bold 14px monospace';
+      ctx.fillText('⌨️ 部屋コードを直接入力する',lx+14,y+28);
+    }
+  }
+  ctx.fillStyle='#fff';ctx.font='12px monospace';
+  ctx.fillText('↑↓:選択  SPACE/ENTER:決定  R:一覧を更新  ESC:戻る',90,392);
+  if(MP.status){ctx.fillStyle='#ff8080';ctx.font='12px monospace';ctx.fillText(MP.status,90,410);}
+}
+
 
 // ---- update / draw を再ラップ ----
 const _mpUpdatePrev=window.update;
 window.update=function(){
-  if(MODE==='ONLINE_MENU'||MODE==='ONLINE_HOST_WAIT'||MODE==='ONLINE_JOIN_WAIT'){titleFrame++;return;}
+  if(MODE==='ONLINE_MENU'||MODE==='ONLINE_HOST_SETUP'||MODE==='ONLINE_HOST_WAIT'||MODE==='ONLINE_JOIN_WAIT'){titleFrame++;return;}
+  if(MODE==='ONLINE_JOIN_LIST'){
+    titleFrame++;joinListRefreshT++;
+    if(joinListRefreshT>=150){joinListRefreshT=0;lobbyRequestList();} // 約2.5秒ごとに一覧を更新
+    return;
+  }
   _mpUpdatePrev();
   if(MP.active)mpNetTick();
 };
 const _mpDrawPrev=window.draw;
 window.draw=function(){
   if(MODE==='ONLINE_MENU'){drawOnlineMenu();return;}
+  if(MODE==='ONLINE_HOST_SETUP'){drawOnlineHostSetup();return;}
   if(MODE==='ONLINE_HOST_WAIT'){drawOnlineHostWait();return;}
+  if(MODE==='ONLINE_JOIN_LIST'){drawOnlineJoinList();return;}
   if(MODE==='ONLINE_JOIN_WAIT'){drawOnlineJoinWait();return;}
   _mpDrawPrev();
   if(MP.active){
@@ -2797,4 +3098,4 @@ window.drawPl=function(pl){
 
 </script>
 </body>
-</html>p.DX.html…]()
+</html>
