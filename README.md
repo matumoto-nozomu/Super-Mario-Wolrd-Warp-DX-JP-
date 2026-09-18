@@ -1,4 +1,4 @@
-[Super_Mario_World_Warp_DX (2).html](https://github.com/user-attachments/files/32319485/Super_Mario_World_Warp_DX.2.html)
+[Super_Mario_World_Warp_DX .html](https://github.com/user-attachments/files/32365480/Super_Mario_World_Warp_DX.html)
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -385,7 +385,7 @@ function updatePlayer(pl,ks,other){
   if(isLowGrav&&pl.vy>3.0)pl.vy=3.0;
   if(gimmick.currentForce)pl.vx-=gimmick.currentForce*0.04;
   pl.x+=pl.vx;pl.y+=pl.vy;
-  if(pl.x<cameraX)pl.x=cameraX;
+  if(!mpInBattle()&&pl.x<cameraX)pl.x=cameraX;
   const fireKey=(pl.fire&&pl.fcd===0&&(ks.f||(ks.d&&pl.fire)));
   if(fireKey){fireballs.push({x:pl.x+24,y:pl.y+16,w:10,h:10,vx:pl.dir==='right'?9:-9,vy:-3,life:80,own:pl.p2?2:1});pl.fcd=18;seFx('fire');}
   const lavaY=gimmick.lava||(H+50);const isLvStage=(theme==='lava'||gimmick.lava!==undefined);
@@ -394,7 +394,7 @@ function updatePlayer(pl,ks,other){
   if(theme==='sky'&&pl.y<-100){pl.dead=true;pl.vy=-11;return;}
   resolve(pl);
   if(numP===2&&other&&!other.dead){if(hit(pl,other)){const stomp=pl.vy>0&&(pl.y+pl.h-pl.vy)<=(other.y+10);if(stomp){pl.vy=dash?-18:-15;pl.grnd=false;other.vy=Math.min(other.vy,-2);}else{if(pl.x<other.x)pl.x=other.x-pl.w;else pl.x=other.x+other.w;}}}
-  if(hit(pl,{x:goal.x,y:goal.y,w:goal.w,h:goal.h})){pl.clear=true;pl.vx=0;pl.vy=0;ks.r=ks.l=ks.j=ks.d=false;pl.score+=5000;seFx('clear');}
+  if(hit(pl,{x:goal.x,y:goal.y,w:goal.w,h:goal.h})&&!mpInBattle()){pl.clear=true;pl.vx=0;pl.vy=0;ks.r=ks.l=ks.j=ks.d=false;pl.score+=5000;seFx('clear');}
   coins.forEach(c=>{if(!c.col&&hit(pl,{x:c.x,y:c.y,w:c.w,h:c.h})){c.col=true;pl.score+=200;seFx('coin');}});
   items.forEach(it=>{
     if(it.col||!hit(pl,{x:it.x,y:it.y,w:it.w,h:it.h}))return;it.col=true;seFx('item');
@@ -632,6 +632,7 @@ window.addEventListener('keydown',e=>{
   }
   // プレイ中 死亡/クリア後
   if(P1.dead||P1.clear){
+    if(mpInBattle())return; // バトルモードでは脱落後の操作(リトライ等)は無効
     if(k===' '){
       if(P1.clear){
         const cs=STAGES.find(s=>s.id===stageId);if(cs)cs.cleared=true;
@@ -1082,7 +1083,14 @@ function drawGame(){
     if(Math.floor(titleFrame/20)%2===0){ctx.fillStyle='#ff4444';ctx.font='bold 13px monospace';ctx.textAlign='center';ctx.fillText('⚠ クリボーラッシュ！',400,H-8);ctx.textAlign='left';}
   }
   // オーバーレイ
-  if(P1.dead){ctx.fillStyle='#fff';ctx.font='bold 36px monospace';ctx.textAlign='center';ctx.fillText('GAME OVER',400,180);ctx.font='bold 16px monospace';ctx.fillText((hardMode&&lives<=0)?'GAME OVER - WORLD MAPへ':'PRESS SPACE TO RETRY  残機:'+lives,400,228);ctx.textAlign='left';}
+  if(P1.dead){
+    if(mpInBattle()){
+      ctx.fillStyle='#fff';ctx.font='bold 28px monospace';ctx.textAlign='center';ctx.fillText('脱落しました',400,180);
+      ctx.font='bold 14px monospace';ctx.fillText('他のプレイヤーの様子を見ています...',400,210);ctx.textAlign='left';
+    }else{
+      ctx.fillStyle='#fff';ctx.font='bold 36px monospace';ctx.textAlign='center';ctx.fillText('GAME OVER',400,180);ctx.font='bold 16px monospace';ctx.fillText((hardMode&&lives<=0)?'GAME OVER - WORLD MAPへ':'PRESS SPACE TO RETRY  残機:'+lives,400,228);ctx.textAlign='left';
+    }
+  }
   if(P1.clear){ctx.fillStyle='#fff';ctx.font='bold 36px monospace';ctx.textAlign='center';ctx.fillText('STAGE CLEAR!',400,180);ctx.font='bold 16px monospace';ctx.fillText('PRESS SPACE TO CONTINUE',400,228);ctx.textAlign='left';}
   // HUD
   ctx.fillStyle='#fff';ctx.font='bold 18px monospace';ctx.fillText('MARIO',20,34);ctx.fillText(String(P1.score).padStart(6,'0'),20,56);
@@ -1148,7 +1156,7 @@ function update(){
   updateGimmick();updateEnemies();updateItems();updateFBs();
   updatePlayer(P1,K1,numP===2?P2:null);
   if(numP===2)updatePlayer(P2,K2,P1);
-  if(!P1.dead){const tc=P1.x-350;if(tc>cameraX)cameraX=tc;}
+  if(!P1.dead){if(mpInBattle()){cameraX=Math.max(0,P1.x-350);}else{const tc=P1.x-350;if(tc>cameraX)cameraX=tc;}}
 }
 
 function draw(){
@@ -2454,11 +2462,113 @@ const MP={
   peer:null, isHost:false, roomCode:null, conns:{}, hostConn:null,
   myName:'PLAYER', myColorIdx:0, myId:null,
   roomName:'', roomPassword:'', hasPassword:false, lobbyHeartbeat:null,
+  mode:'coop', battle:null,
   players:{}, active:false, inPlay:false, sendCd:0, status:''
 };
 let onlineSel=1; // 1=ホスト 2=ジョイン
 let joinListSel=0;      // ジョイン画面: ルーム一覧のカーソル位置
 let joinListRefreshT=0; // ジョイン画面: 一覧の自動更新用フレームカウンタ
+function mpInBattle(){return !!(MP.active&&MP.mode==='battle'&&MP.battle&&MP.battle.active);}
+
+// ============================================================
+// ★ どこでもチャット機能 ★
+// オンライン中はいつでもEnterキーでチャット欄を呼び出せる。
+// 日本語入力(IME)にきちんと対応するため、見えない/表示するテキスト入力欄を
+// 本物のDOM要素として重ねて使う(canvas上で自前のキー入力管理はIMEと相性が悪いため)。
+// ============================================================
+const CHAT={open:false,messages:[]};
+const chatInputEl=document.createElement('input');
+chatInputEl.type='text';
+chatInputEl.maxLength=80;
+chatInputEl.autocomplete='off';
+chatInputEl.style.cssText='position:absolute;left:8px;bottom:8px;width:380px;padding:4px 8px;font:bold 14px monospace;background:#111;color:#fff;border:2px solid #fc9c00;border-radius:4px;z-index:9999;display:none;box-sizing:border-box;';
+document.body.appendChild(chatInputEl);
+function mpChatBoxPosition(){
+  // ゲームのcanvas要素の実際の表示位置に合わせてチャット入力欄を配置する
+  try{
+    const r=CV.getBoundingClientRect();
+    const scale=r.width/W;
+    chatInputEl.style.left=(r.left+8*scale)+'px';
+    chatInputEl.style.bottom=(window.innerHeight-r.bottom+8*scale)+'px';
+    chatInputEl.style.width=Math.max(200,380*scale)+'px';
+    chatInputEl.style.fontSize=Math.max(11,14*scale)+'px';
+  }catch(e){}
+}
+function openChat(){
+  if(CHAT.open)return;
+  CHAT.open=true;chatInputEl.value='';
+  mpChatBoxPosition();
+  chatInputEl.style.display='block';
+  setTimeout(()=>{try{chatInputEl.focus();}catch(e){}},0);
+}
+function closeChat(){
+  CHAT.open=false;
+  chatInputEl.style.display='none';
+  try{chatInputEl.blur();}catch(e){}
+}
+chatInputEl.addEventListener('keydown',function(e){
+  if(e.isComposing||e.keyCode===229){e.stopPropagation();return;} // IME変換中は何もしない
+  if(e.key==='Enter'){
+    e.stopPropagation();e.preventDefault();
+    const t=chatInputEl.value.trim();
+    closeChat();
+    if(t)mpSendChat(t);
+    return;
+  }
+  if(e.key==='Escape'){
+    e.stopPropagation();e.preventDefault();
+    closeChat();
+    return;
+  }
+  e.stopPropagation(); // 移動キー等がゲーム側の操作として反応しないようにする
+});
+function mpAppendChat(name,colorIdx,text){
+  CHAT.messages.push({name:name||'PLAYER',colorIdx:colorIdx||0,text:text||'',time:Date.now()});
+  if(CHAT.messages.length>50)CHAT.messages.shift();
+}
+function mpSendChat(text){
+  text=(text||'').trim().slice(0,80);
+  if(!text||!MP.active)return;
+  const name=MP.myName,colorIdx=MP.myColorIdx;
+  if(MP.isHost){
+    mpAppendChat(name,colorIdx,text);
+    const msg={t:'chat',name,colorIdx,text};
+    Object.values(MP.conns).forEach(c=>{try{c.send(msg);}catch(e){}});
+  }else if(MP.hostConn&&MP.hostConn.open){
+    try{MP.hostConn.send({t:'chat',name,colorIdx,text});}catch(e){}
+  }
+}
+function drawChat(){
+  if(!MP.active)return;
+  ctx.save();ctx.textAlign='left';
+  const now=Date.now();
+  const shown=CHAT.messages.slice(-6);
+  let baseY=H-16;
+  shown.forEach((m,i)=>{
+    const age=now-m.time;
+    if(!CHAT.open&&age>12000)return; // 未入力時、12秒経ったログは自然に消す
+    const alpha=CHAT.open?1:Math.max(0.12,1-age/12000);
+    const yy=baseY-(shown.length-1-i)*17;
+    ctx.font='bold 12px monospace';
+    const nameTxt=m.name+': ';
+    const nameW=ctx.measureText(nameTxt).width;
+    ctx.font='12px monospace';
+    const textW=ctx.measureText(m.text).width;
+    ctx.fillStyle='rgba(0,0,0,'+(0.55*alpha).toFixed(2)+')';
+    ctx.fillRect(4,yy-13,Math.min(430,nameW+textW+12),16);
+    ctx.font='bold 12px monospace';
+    ctx.fillStyle=(MP_COLORS[m.colorIdx]||'#fff');ctx.globalAlpha=alpha;
+    ctx.fillText(nameTxt,8,yy-1);
+    ctx.font='12px monospace';ctx.fillStyle='#fff';
+    ctx.fillText(m.text,8+nameW,yy-1);
+    ctx.globalAlpha=1;
+  });
+  if(!CHAT.open){
+    ctx.fillStyle='rgba(255,255,255,0.45)';ctx.font='10px monospace';ctx.fillText('ENTER:チャット',4,H-3);
+  }
+  ctx.restore();
+}
+
 
 function mpMakeCode(){const cs='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';let s='';for(let i=0;i<4;i++)s+=cs[Math.floor(Math.random()*cs.length)];return s;}
 
@@ -2504,7 +2614,7 @@ function lobbyBroadcast(){
 function lobbyCoordOnData(conn,data){
   if(!data||!data.t)return;
   if(data.t==='register'){
-    LOBBY.rooms[data.code]={code:data.code,name:(data.name||'部屋').slice(0,16),hostName:(data.hostName||'PLAYER').slice(0,10),hasPassword:!!data.hasPassword,count:data.count||1,updatedAt:Date.now()};
+    LOBBY.rooms[data.code]={code:data.code,name:(data.name||'部屋').slice(0,16),hostName:(data.hostName||'PLAYER').slice(0,10),hasPassword:!!data.hasPassword,mode:data.mode==='battle'?'battle':'coop',count:data.count||1,updatedAt:Date.now()};
     lobbyBroadcast();
   }else if(data.t==='update'){
     const r=LOBBY.rooms[data.code];if(r){r.count=data.count;if(data.name!==undefined)r.name=(data.name||r.name).slice(0,16);r.updatedAt=Date.now();lobbyBroadcast();}
@@ -2572,8 +2682,8 @@ function lobbyInit(onReady){
     LOBBY.ready=false;LOBBY.failed=true;onReady&&onReady();
   });
 }
-function lobbyRegisterRoom(code,name,hostName,hasPassword,count){
-  const payload={t:'register',code,name,hostName,hasPassword,count};
+function lobbyRegisterRoom(code,name,hostName,hasPassword,count,mode){
+  const payload={t:'register',code,name,hostName,hasPassword,count,mode};
   if(LOBBY.isCoordinator){lobbyCoordOnData({send:()=>{}},payload);}
   else if(LOBBY.coordConn&&LOBBY.coordConn.open){try{LOBBY.coordConn.send(payload);}catch(e){}}
 }
@@ -2599,15 +2709,18 @@ function mpResetNet(){
   if(MP.lobbyHeartbeat){clearInterval(MP.lobbyHeartbeat);MP.lobbyHeartbeat=null;}
   MP.peer=null;MP.isHost=false;MP.roomCode=null;MP.conns={};MP.hostConn=null;
   MP.roomName='';MP.roomPassword='';MP.hasPassword=false;
+  MP.mode='coop';MP.battle=null;MP._hitCd={};MP._pitReported=false;
   MP.players={};MP.active=false;MP.inPlay=false;
+  CHAT.messages=[];closeChat();
 }
 function mpLeave(){mpResetNet();lobbyTeardown();MODE='TITLE';bgmStop();}
 
 // ---- ホスト側 ----
-function mpStartHost(attempt,roomName,password){
+function mpStartHost(attempt,roomName,password,mode){
   attempt=attempt||0;
   if(roomName!==undefined)MP._pendingRoomName=roomName;
   if(password!==undefined)MP._pendingPassword=password;
+  if(mode!==undefined)MP._pendingMode=mode;
   if(typeof Peer==='undefined'){MP.status='オンライン機能の読み込みに失敗しました(通信環境を確認してください)';return;}
   if(attempt>6){MP.status='部屋を作成できませんでした。もう一度お試しください';return;}
   const code=mpMakeCode();
@@ -2622,10 +2735,11 @@ function mpStartHost(attempt,roomName,password){
     MP.isHost=true;MP.roomCode=code;MP.myId=id;MP.active=true;MP.status='';
     MP.roomName=(MP._pendingRoomName||(MP.myName+'のへや')).slice(0,16);
     MP.roomPassword=MP._pendingPassword||'';MP.hasPassword=!!MP.roomPassword;
+    MP.mode=(MP._pendingMode==='battle')?'battle':'coop';
     MP.players[id]={name:MP.myName,colorIdx:MP.myColorIdx,x:100,y:200,dir:'right',fr:0,anim:'idle',big:false,fire:false,mini:false,dead:false,host:true};
     // 部屋一覧(ロビー)にこの部屋を登録し、以後は生存確認を兼ねて定期送信する
     lobbyInit(()=>{
-      lobbyRegisterRoom(MP.roomCode,MP.roomName,MP.myName,MP.hasPassword,Object.keys(MP.players).length);
+      lobbyRegisterRoom(MP.roomCode,MP.roomName,MP.myName,MP.hasPassword,Object.keys(MP.players).length,MP.mode);
       MP.lobbyHeartbeat=setInterval(()=>{
         if(!MP.isHost||!MP.roomCode){return;}
         lobbyUpdateRoom(MP.roomCode,Object.keys(MP.players).length,MP.roomName);
@@ -2658,6 +2772,16 @@ function mpHostOnData(conn,data){
   }else if(data.t==='state'){
     const pl=MP.players[conn.peer];if(!pl)return;
     Object.assign(pl,data.s);
+  }else if(data.t==='chat'){
+    const name=(data.name||'PLAYER').slice(0,10),text=(data.text||'').trim().slice(0,80);
+    if(!text)return;
+    mpAppendChat(name,data.colorIdx||0,text);
+    const msg={t:'chat',name,colorIdx:data.colorIdx||0,text};
+    Object.values(MP.conns).forEach(c=>{if(c!==conn){try{c.send(msg);}catch(e){}}}); // 送信者以外の全員に中継
+  }else if(data.t==='battleHit'){
+    if(data.target&&data.target!==conn.peer)mpBattleApplyHit(data.target,conn.peer);
+  }else if(data.t==='battleOut'){
+    mpBattleApplyOut(conn.peer);
   }
 }
 function mpBroadcastLobby(){
@@ -2674,10 +2798,76 @@ function mpHostStartGame(){
   if(!MP.isHost)return;
   const seed=Math.floor(Math.random()*2147483647);
   const extra=!!gameCompleted; // ホストの進行状況に合わせて全員同じバリエーションにする
-  const msg={t:'start',seed,extra};
+  let battlePayload=null;
+  if(MP.mode==='battle'){
+    const alive={};Object.keys(MP.players).forEach(id=>alive[id]=true);
+    MP.battle={active:true,hits:{},alive:alive,winner:null};
+    battlePayload={hits:{},alive:alive,winner:null};
+  }else{
+    MP.battle=null;
+  }
+  const msg={t:'start',seed,extra,mode:MP.mode,battle:battlePayload};
   Object.values(MP.conns).forEach(c=>{try{c.send(msg);}catch(err){}});
   MP.inPlay=true;mpEnterTutorial(seed,extra);
 }
+// ---- バトルモード: ホストが判定を集計して全員に配信する ----
+function mpBattleApplyHit(targetId,byId){
+  if(!MP.isHost||!MP.battle||!MP.battle.active)return;
+  if(!(targetId in MP.battle.alive)||MP.battle.alive[targetId]===false)return;
+  MP.battle.hits[targetId]=(MP.battle.hits[targetId]||0)+1;
+  if(MP.battle.hits[targetId]>=5)MP.battle.alive[targetId]=false;
+  mpBattleCheckWinnerAndBroadcast();
+}
+function mpBattleApplyOut(id){
+  if(!MP.isHost||!MP.battle||!MP.battle.active)return;
+  if(!(id in MP.battle.alive)||MP.battle.alive[id]===false)return;
+  MP.battle.alive[id]=false;
+  mpBattleCheckWinnerAndBroadcast();
+}
+function mpBattleCheckWinnerAndBroadcast(){
+  const aliveIds=Object.keys(MP.battle.alive).filter(id=>MP.battle.alive[id]!==false);
+  if(aliveIds.length<=1&&!MP.battle.winner){
+    MP.battle.winner=aliveIds[0]||'draw';
+    setTimeout(()=>{
+      if(!MP.isHost)return;
+      MP.battle=null;MP.inPlay=false;MODE='ONLINE_HOST_WAIT';
+      Object.values(MP.conns).forEach(c=>{try{c.send({t:'lobbyReturn'});}catch(e){}});
+    },4500);
+  }
+  const msg={t:'battleUpdate',hits:MP.battle.hits,alive:MP.battle.alive,winner:MP.battle.winner};
+  Object.values(MP.conns).forEach(c=>{try{c.send(msg);}catch(e){}});
+}
+// ---- バトルモード: 自分視点での当たり判定と結果報告 ----
+function mpBattleReportHit(targetId){
+  const now=Date.now();
+  MP._hitCd=MP._hitCd||{};
+  if(MP._hitCd[targetId]&&now-MP._hitCd[targetId]<800)return;
+  MP._hitCd[targetId]=now;
+  if(MP.isHost)mpBattleApplyHit(targetId,MP.myId);
+  else if(MP.hostConn&&MP.hostConn.open){try{MP.hostConn.send({t:'battleHit',target:targetId});}catch(e){}}
+}
+function mpBattleReportOut(){
+  if(MP.isHost)mpBattleApplyOut(MP.myId);
+  else if(MP.hostConn&&MP.hostConn.open){try{MP.hostConn.send({t:'battleOut'});}catch(e){}}
+}
+function mpBattleCollide(){
+  if(!mpInBattle()||P1.dead)return;
+  Object.keys(MP.players).forEach(id=>{
+    if(id===MP.myId)return;
+    const g=MP.players[id];
+    if(!g||g.mode!=='play'||g.x==null||g.dead)return;
+    if(MP.battle.alive&&MP.battle.alive[id]===false)return;
+    const gw=32,gh=(g.big||g.fire)?48:32;
+    const gx=g.x,gy=g.y-((g.big||g.fire)?16:0);
+    const overlap=P1.x<gx+gw&&P1.x+P1.w>gx&&P1.y<gy+gh&&P1.y+P1.h>gy;
+    if(overlap){
+      const stomp=P1.vy>0&&(P1.y+P1.h-P1.vy)<=gy+10;
+      if(stomp){P1.vy=-13;P1.grnd=false;mpBattleReportHit(id);seFx('stomp');}
+      else{if(P1.x<gx)P1.x=Math.max(cameraX,P1.x-2);else P1.x+=2;}
+    }
+  });
+}
+
 
 // ---- 参加側 ----
 function mpJoin(code,password){
@@ -2711,10 +2901,26 @@ function mpClientOnData(data){
   if(data.t==='full'){MP.status='この部屋は満員です(最大16人)';mpResetNet();MODE='ONLINE_MENU';return;}
   if(data.t==='badpass'){MP.status='パスワードが違います';mpResetNet();MODE='ONLINE_JOIN_LIST';joinListRefreshT=0;return;}
   if(data.t==='lobby'){MP.players=data.players;return;}
-  if(data.t==='start'){MP.inPlay=true;mpEnterTutorial(data.seed,data.extra);return;}
+  if(data.t==='start'){
+    MP.mode=(data.mode==='battle')?'battle':'coop';
+    MP.battle=data.battle?{active:true,hits:data.battle.hits||{},alive:data.battle.alive||{},winner:null}:null;
+    MP.inPlay=true;mpEnterTutorial(data.seed,data.extra);
+    return;
+  }
+  if(data.t==='battleUpdate'){
+    if(MP.battle){MP.battle.hits=data.hits||{};MP.battle.alive=data.alive||{};MP.battle.winner=data.winner||null;}
+    return;
+  }
+  if(data.t==='lobbyReturn'){
+    MP.battle=null;MP.inPlay=false;MODE='ONLINE_JOIN_WAIT';MP.status='ホストがロビーに戻りました。次の開始をお待ちください...';
+    return;
+  }
   if(data.t==='snapshot'){
     Object.keys(data.players).forEach(id=>{if(id!==MP.myId)MP.players[id]=Object.assign(MP.players[id]||{},data.players[id]);});
     Object.keys(MP.players).forEach(id=>{if(!data.players[id]&&id!==MP.myId)delete MP.players[id];});
+  }
+  if(data.t==='chat'){
+    mpAppendChat((data.name||'PLAYER').slice(0,10),data.colorIdx||0,(data.text||'').trim().slice(0,80));
   }
 }
 
@@ -2740,6 +2946,8 @@ function mpEnterTutorial(seed,extra){
     Math.random=origRandom;
   }
   resetGame();stageActive=true;numP=1;
+  if(mpInBattle()){enemies.length=0;} // バトルモードは敵なし
+  MP._hitCd={};MP._pitReported=false;
   MODE='TUTORIAL';
 }
 
@@ -2802,12 +3010,54 @@ function drawMpHud(){
   ctx.fillStyle='#ffd700';ctx.font='bold 11px monospace';
   ctx.fillText('🌐 '+(MP.roomCode||'-')+'  '+n+'/16人  ESC:退出',4,14);
 }
+function drawMpBattleHud(){
+  if(!MP.battle)return;
+  const ids=Object.keys(MP.players);
+  const boxW=150,boxH=20;
+  ctx.font='bold 11px monospace';
+  ids.forEach((id,i)=>{
+    const p=MP.players[id];if(!p)return;
+    const x=W-boxW-6,y=6+i*(boxH+3);
+    const alive=MP.battle.alive[id]!==false;
+    const hits=MP.battle.hits[id]||0;
+    ctx.fillStyle=alive?'rgba(0,0,0,0.55)':'rgba(60,0,0,0.55)';ctx.fillRect(x,y,boxW,boxH);
+    ctx.fillStyle=MP_COLORS[p.colorIdx]||'#fff';ctx.fillRect(x+2,y+3,14,14);
+    ctx.fillStyle=alive?'#fff':'#888';
+    ctx.fillText((id===MP.myId?'★':'')+(p.name||'?').slice(0,8),x+20,y+14);
+    if(alive){
+      ctx.fillStyle='#ff8080';
+      for(let k=0;k<5;k++)ctx.fillText(k<hits?'●':'○',x+96+k*10,y+14);
+    }else{
+      ctx.fillStyle='#888';ctx.fillText('脱落',x+110,y+14);
+    }
+  });
+  if(MP.battle.winner){
+    ctx.fillStyle='rgba(0,0,0,0.7)';ctx.fillRect(200,150,400,80);
+    ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.strokeRect(200,150,400,80);
+    ctx.textAlign='center';ctx.fillStyle='#ffd700';ctx.font='bold 22px monospace';
+    const wp=MP.players[MP.battle.winner];
+    ctx.fillText(MP.battle.winner==='draw'?'引き分け':'🏆 '+(wp?wp.name:'?')+' の勝利!',400,190);
+    ctx.font='12px monospace';ctx.fillStyle='#fff';ctx.fillText('まもなくロビーに戻ります...',400,215);
+    ctx.textAlign='left';
+  }
+}
+
+// ---- どこでもチャット: Enterキーで最優先に呼び出す(オンライン中のみ) ----
+window.addEventListener('keydown',function(e){
+  if(CHAT.open)return; // 入力中はチャット欄自身のハンドラに任せる
+  if(e.key==='Enter'&&MP.active){
+    e.stopImmediatePropagation();e.preventDefault();
+    openChat();
+  }
+},true);
 
 // ---- タイトル画面のキー入力: [5]で ONLINE を選択 ----
 window.addEventListener('keydown',function(e){
+  if(CHAT.open)return;
   if(MODE==='TITLE'&&e.key==='5')titleSel=5;
 },true);
 window.addEventListener('keydown',function(e){
+  if(CHAT.open)return;
   if(MODE==='TITLE'&&(e.key===' '||e.key==='Enter')&&titleSel===5){
     e.stopImmediatePropagation();MODE='ONLINE_MENU';onlineSel=1;MP.status='';bgmStop();
   }
@@ -2816,6 +3066,7 @@ window.addEventListener('keydown',function(e){
 // ---- オンラインメニュー/ロビーの入力 ----
 let HS={name:'',hasPassword:false,password:'',sel:0}; // ホスト設定画面の状態
 window.addEventListener('keydown',function(e){
+  if(CHAT.open)return;
   const k=e.key;
   if(MODE==='ONLINE_MENU'){
     e.stopImmediatePropagation();e.preventDefault();
@@ -2828,7 +3079,7 @@ window.addEventListener('keydown',function(e){
       const nm=(prompt('プレイヤー名を入力してください(最大10文字)','PLAYER')||'PLAYER').trim().slice(0,10);
       MP.myName=nm||'PLAYER';
       if(onlineSel===1){
-        HS={name:(MP.myName+'のへや').slice(0,16),hasPassword:false,password:'',sel:0};
+        HS={name:(MP.myName+'のへや').slice(0,16),hasPassword:false,password:'',mode:'coop',sel:0};
         MODE='ONLINE_HOST_SETUP';
       }else{
         MODE='ONLINE_JOIN_LIST';joinListSel=0;joinListRefreshT=0;MP.status='';
@@ -2840,7 +3091,8 @@ window.addEventListener('keydown',function(e){
   }
   if(MODE==='ONLINE_HOST_SETUP'){
     e.stopImmediatePropagation();e.preventDefault();
-    if(k==='ArrowUp'||k==='ArrowDown')HS.sel=(HS.sel+(k==='ArrowDown'?1:-1)+3)%3;
+    if(k==='ArrowUp'||k==='ArrowDown')HS.sel=(HS.sel+(k==='ArrowDown'?1:-1)+4)%4;
+    if((k==='ArrowLeft'||k==='ArrowRight')&&HS.sel===2)HS.mode=(HS.mode==='coop')?'battle':'coop';
     if(k===' '||k==='Enter'){
       if(HS.sel===0){
         const nm=prompt('部屋の名前を入力してください(最大16文字)',HS.name);
@@ -2851,7 +3103,9 @@ window.addEventListener('keydown',function(e){
           if(pw&&pw.trim()){HS.hasPassword=true;HS.password=pw.trim().slice(0,16);}
         }else{HS.hasPassword=false;HS.password='';}
       }else if(HS.sel===2){
-        MODE='ONLINE_HOST_WAIT';mpStartHost(0,HS.name,HS.hasPassword?HS.password:'');
+        HS.mode=(HS.mode==='coop')?'battle':'coop';
+      }else if(HS.sel===3){
+        MODE='ONLINE_HOST_WAIT';mpStartHost(0,HS.name,HS.hasPassword?HS.password:'',HS.mode);
       }
     }
     if(k==='Escape'){MODE='ONLINE_MENU';}
@@ -2928,20 +3182,22 @@ function drawOnlineMenu(){
 }
 function drawOnlineHostWait(){
   ctx.fillStyle='#0a0a2a';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#fff';ctx.font='bold 22px monospace';ctx.textAlign='center';ctx.fillText('ホストゲーム - ロビー',400,45);ctx.textAlign='left';
+  ctx.fillStyle='#fff';ctx.font='bold 22px monospace';ctx.textAlign='center';ctx.fillText('ホストゲーム - ロビー',400,30);ctx.textAlign='left';
   if(!MP.roomCode){
     ctx.fillStyle='#ffd700';ctx.font='14px monospace';ctx.fillText(MP.status||'ルーム作成中...',260,150);return;
   }
-  ctx.fillStyle='#000';ctx.fillRect(220,66,360,80);ctx.strokeStyle='#fc9c00';ctx.lineWidth=3;ctx.strokeRect(220,66,360,80);
-  ctx.fillStyle='#aaa';ctx.font='12px monospace';ctx.textAlign='center';ctx.fillText(MP.roomName||'',400,84);
-  ctx.fillStyle='#fc9c00';ctx.font='bold 34px monospace';ctx.fillText(MP.roomCode,400,120);
+  ctx.fillStyle=MP.mode==='battle'?'#ff8040':'#4090ff';ctx.font='bold 11px monospace';ctx.textAlign='center';
+  ctx.fillText(MP.mode==='battle'?'⚔️ バトルモード':'🤝 きょうりょくモード',400,46);ctx.textAlign='left';
+  ctx.fillStyle='#000';ctx.fillRect(220,54,360,80);ctx.strokeStyle='#fc9c00';ctx.lineWidth=3;ctx.strokeRect(220,54,360,80);
+  ctx.fillStyle='#aaa';ctx.font='12px monospace';ctx.textAlign='center';ctx.fillText(MP.roomName||'',400,72);
+  ctx.fillStyle='#fc9c00';ctx.font='bold 34px monospace';ctx.fillText(MP.roomCode,400,108);
   ctx.fillStyle=MP.hasPassword?'#ff8080':'#80ff80';ctx.font='bold 12px monospace';
-  ctx.fillText(MP.hasPassword?'🔒 パスコードあり':'🔓 パスコードなし(誰でも入室可)',400,140);
+  ctx.fillText(MP.hasPassword?'🔒 パスコードあり':'🔓 パスコードなし(誰でも入室可)',400,128);
   ctx.textAlign='left';
-  ctx.fillStyle='#888';ctx.font='11px monospace';ctx.fillText('↑この部屋は「ジョイン」の部屋一覧にも表示されます',225,158);
-  ctx.fillStyle='#fff';ctx.font='13px monospace';ctx.fillText('参加者 ('+Object.keys(MP.players).length+'/16):',220,178);
+  ctx.fillStyle='#888';ctx.font='11px monospace';ctx.fillText('↑この部屋は「ジョイン」の部屋一覧にも表示されます',225,146);
+  ctx.fillStyle='#fff';ctx.font='13px monospace';ctx.fillText('参加者 ('+Object.keys(MP.players).length+'/16):',220,166);
   Object.values(MP.players).forEach((p,i)=>{
-    const y=197+i*20;
+    const y=185+i*20;
     ctx.fillStyle=MP_COLORS[p.colorIdx]||'#fff';ctx.fillRect(220,y-12,14,14);
     ctx.fillStyle='#fff';ctx.font='12px monospace';ctx.fillText((p.host?'★ ':'')+p.name,242,y);
   });
@@ -2965,31 +3221,39 @@ function drawOnlineJoinWait(){
 // ---- 描画: ホスト設定画面(スマブラの「専用ルーム」設定風) ----
 function drawOnlineHostSetup(){
   ctx.fillStyle='#0a0a2a';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#fff';ctx.font='bold 24px monospace';ctx.textAlign='center';ctx.fillText('⚙️ 部屋の設定',400,50);ctx.textAlign='left';
+  ctx.fillStyle='#fff';ctx.font='bold 22px monospace';ctx.textAlign='center';ctx.fillText('⚙️ 部屋の設定',400,36);ctx.textAlign='left';
   const rows=[
     {label:'部屋の名前',value:HS.name},
     {label:'パスコード',value:HS.hasPassword?('あり  ( '+HS.password.replace(/./g,'*')+' )'):'なし(誰でも入室可)'},
+    {label:'モード',value:HS.mode==='battle'?'⚔️ バトル(踏み合い・最後の1人)':'🤝 きょうりょく(通常プレイ)'},
     {label:'▶ この設定でホストを開始する',value:''}
   ];
-  const rx=140,rw=520,rh=56;
+  const rx=110,rw=580,rh=46,gap=10;
   rows.forEach((row,i)=>{
-    const ry=100+i*(rh+14);
+    const ry=48+i*(rh+gap);
     const sel=HS.sel===i;
     ctx.fillStyle=sel?'#fc9c00':'#222';ctx.fillRect(rx,ry,rw,rh);
     ctx.strokeStyle=sel?'#fff':'#555';ctx.lineWidth=sel?3:1;ctx.strokeRect(rx,ry,rw,rh);
     ctx.fillStyle=sel?'#000':'#ccc';
-    if(i<2){
-      ctx.font='bold 13px monospace';ctx.fillText(row.label+':',rx+16,ry+24);
-      ctx.font='bold 16px monospace';ctx.fillText(row.value,rx+16,ry+46);
+    if(i<3){
+      ctx.font='bold 12px monospace';ctx.fillText(row.label+':',rx+14,ry+18);
+      ctx.font='bold 15px monospace';ctx.fillText(row.value,rx+14,ry+38);
     }else{
-      ctx.font='bold 17px monospace';ctx.textAlign='center';ctx.fillText(row.label,rx+rw/2,ry+34);ctx.textAlign='left';
+      ctx.font='bold 16px monospace';ctx.textAlign='center';ctx.fillText(row.label,rx+rw/2,ry+29);ctx.textAlign='left';
     }
   });
+  const footY=48+4*(rh+gap)+14;
   ctx.fillStyle='#fff';ctx.font='12px monospace';
-  ctx.fillText('↑↓:項目選択  SPACE/ENTER:決定・編集  ESC:戻る',150,340);
-  if(HS.sel===1)ctx.fillText('(パスコード行でSPACE/ENTER: 設定/解除を切り替え)',150,358);
-  if(MP.status){ctx.fillStyle='#ff8080';ctx.fillText(MP.status,150,380);}
-  ctx.fillStyle='#888';ctx.font='11px monospace';ctx.fillText('パスコードを設定すると、部屋一覧に🔒アイコン付きで表示され、正しい合言葉を知る人だけが入室できます',150,405);
+  ctx.fillText('↑↓:項目選択  ←→/SPACE/ENTER:決定・編集  ESC:戻る',rx,footY);
+  if(HS.sel===1)ctx.fillText('(パスコード行でSPACE/ENTER: 設定/解除を切り替え)',rx,footY+18);
+  if(HS.sel===2){
+    ctx.fillStyle='#aaa';ctx.font='11px monospace';
+    ctx.fillText('バトル: ゴールなし・敵なし・左右自由に移動可・相手を5回踏むと脱落させられる',rx,footY+18);
+    ctx.fillText('穴に落ちても脱落。最後の1人になるまで対戦が続きます。',rx,footY+34);
+  }
+  if(MP.status){ctx.fillStyle='#ff8080';ctx.font='12px monospace';ctx.fillText(MP.status,rx,footY+52);}
+  ctx.fillStyle='#888';ctx.font='11px monospace';
+  ctx.fillText('パスコードを設定すると、部屋一覧に🔒アイコン付きで表示されます',rx,H-14);
 }
 // ---- 描画: ジョイン画面 - 部屋選択リスト(スマブラの部屋選択風) ----
 function drawOnlineJoinList(){
@@ -3014,9 +3278,9 @@ function drawOnlineJoinList(){
     ctx.fillStyle=sel?'#fc9c00':'#222';ctx.fillRect(lx,y,lw,rowH-6);
     ctx.strokeStyle=sel?'#fff':'#555';ctx.lineWidth=sel?3:1;ctx.strokeRect(lx,y,lw,rowH-6);
     ctx.fillStyle=sel?'#000':'#fff';ctx.font='bold 14px monospace';
-    ctx.fillText((room.hasPassword?'🔒 ':'🔓 ')+room.name,lx+14,y+20);
+    ctx.fillText((room.hasPassword?'🔒 ':'🔓 ')+(room.mode==='battle'?'⚔️ ':'')+room.name,lx+14,y+20);
     ctx.font='11px monospace';ctx.fillStyle=sel?'#333':'#aaa';
-    ctx.fillText('ホスト: '+room.hostName+'   人数: '+room.count+'/16   コード: '+room.code,lx+14,y+35);
+    ctx.fillText('ホスト: '+room.hostName+'   人数: '+room.count+'/16   コード: '+room.code+(room.mode==='battle'?'   [バトル]':'   [きょうりょく]'),lx+14,y+35);
   }
   // 「手動でコード入力」行(常に一番下)
   {
@@ -3045,15 +3309,24 @@ window.update=function(){
     return;
   }
   _mpUpdatePrev();
-  if(MP.active)mpNetTick();
+  if(MP.active){
+    mpNetTick();
+    if(mpInBattle()){
+      mpBattleCollide();
+      if(MP.battle.alive[MP.myId]===false&&!P1.dead){P1.dead=true;P1.vy=-11;seFx('die');}
+      if(P1.dead&&MP.battle.alive[MP.myId]!==false&&!MP._pitReported){
+        MP._pitReported=true;mpBattleReportOut();
+      }
+    }
+  }
 };
 const _mpDrawPrev=window.draw;
 window.draw=function(){
-  if(MODE==='ONLINE_MENU'){drawOnlineMenu();return;}
-  if(MODE==='ONLINE_HOST_SETUP'){drawOnlineHostSetup();return;}
-  if(MODE==='ONLINE_HOST_WAIT'){drawOnlineHostWait();return;}
-  if(MODE==='ONLINE_JOIN_LIST'){drawOnlineJoinList();return;}
-  if(MODE==='ONLINE_JOIN_WAIT'){drawOnlineJoinWait();return;}
+  if(MODE==='ONLINE_MENU'){drawOnlineMenu();drawChat();return;}
+  if(MODE==='ONLINE_HOST_SETUP'){drawOnlineHostSetup();drawChat();return;}
+  if(MODE==='ONLINE_HOST_WAIT'){drawOnlineHostWait();drawChat();return;}
+  if(MODE==='ONLINE_JOIN_LIST'){drawOnlineJoinList();drawChat();return;}
+  if(MODE==='ONLINE_JOIN_WAIT'){drawOnlineJoinWait();drawChat();return;}
   _mpDrawPrev();
   if(MP.active){
     if(MODE==='WORLD_MAP'){
@@ -3064,7 +3337,9 @@ window.draw=function(){
     }else if(MODE==='PLAYING'||MODE==='TUTORIAL'){
       ctx.save();ctx.translate(-cameraX,0);drawMpGhosts();ctx.restore();
       drawMpHud();
+      if(mpInBattle())drawMpBattleHud();
     }
+    drawChat();
   }
   if(MODE==='TITLE'){
     const sel=(titleSel===5);
